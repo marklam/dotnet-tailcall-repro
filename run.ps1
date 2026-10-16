@@ -23,7 +23,9 @@ param(
     # Point at an already-published App.exe (implies -SkipBuild). For a machine with no SDK:
     #   dotnet publish App/App.fsproj -c Debug -r win-x64 --self-contained
     # Debug is required -- a Release build inlines the callee and cannot reproduce.
-    [string]$Exe
+    [string]$Exe,
+    # Puts the per-run logs somewhere collectable, e.g. a CI artifact.
+    [string]$LogDir
 )
 
 $ErrorActionPreference = 'Stop'
@@ -51,7 +53,9 @@ if (-not $SkipBuild) {
 }
 if (-not (Test-Path -LiteralPath $target)) { throw "Not built: $target" }
 
-$logs = Join-Path ([IO.Path]::GetTempPath()) "tailcall-repro-$(Get-Date -Format yyyyMMdd-HHmmss)"
+$logs =
+    if ($LogDir) { $LogDir }
+    else { Join-Path ([IO.Path]::GetTempPath()) "tailcall-repro-$(Get-Date -Format yyyyMMdd-HHmmss)" }
 $null = New-Item -ItemType Directory -Force -Path $logs
 Write-Host "Running $Runs processes, $Parallel at a time. Logs: $logs"
 

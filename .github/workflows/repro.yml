@@ -1,0 +1,136 @@
+name: repro
+
+# Manual trigger only. This job deliberately crashes processes hundreds of times, so it is
+# not something to run on every push: it would burn minutes for no new information.
+on:
+  workflow_dispatch:
+    inputs:
+      runs:
+        description: Processes to start per job
+        default: "200"
+      parallel:
+        description: How many to run at once (hosted runners have 4 vCPU)
+        default: "4"
+
+jobs:
+  repro:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    # A corrupted process can refuse to die. Without a cap one could sit on a runner until
+    # the 6-hour default.
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - windows-latest
+          - ubuntu-latest
+          # arm64 is the point of this workflow: the helper-based tail-call path is chosen on
+          # calling-convention grounds, so a different ABI is where behaviour may change.
+          # These labels are newer than the x64 ones; a missing label fails fast and cheaply.
+          - windows-11-arm
+          - ubuntu-24.04-arm
+
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+      DOTNET_NOLOGO: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Build (Debug)
+        run: dotnet build -c Debug -nodeReuse:false
+
+      # If this comes back 0 the construct under test was never emitted, and a clean run below
+      # says nothing at all. Read this before reading the failure count.
+      - name: Check the helper-based tail call is actually emitted
+        shell: bash
+        run: |
+          set -u
+          exe=App/bin/Debug/net10.0/App
+          [ -x "$exe" ] || exe="$exe.exe"
+          DOTNET_JitDisasm='*biasAll*' DOTNET_JitStdOutFile=disasm.txt "$exe" || true
+          count=$(grep -c 'DispatchTailCalls' disasm.txt || true)
+          echo "DispatchTailCalls occurrences: ${count:-0}"
+          echo "dispatch_count=${count:-0}" >> "$GITHUB_ENV"
+          {
+            echo "### ${{ matrix.os }}"
+            echo ""
+            echo "- helper-based tail call emitted: \`${count:-0}\` occurrence(s)"
+            if [ "${count:-0}" = "0" ]; then
+              echo "- **the construct under test is absent here, so a clean result below proves nothing**"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          grep -m1 'Assembly listing for method' disasm.txt || true
+
+      - name: Run the batch
+        id: batch
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -u
+          mkdir -p logs
+          LOGDIR="$PWD/logs" ./run.sh "${{ inputs.runs }}" "${{ inputs.parallel }}" Debug \
+            2>&1 | tee batch.txt || true
+
+      - name: Control arm, tail calls off
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -u
+          mkdir -p logs-notail
+          NOTAILCALLS=1 LOGDIR="$PWD/logs-notail" ./run.sh "${{ inputs.runs }}" "${{ inputs.parallel }}" Debug \
+            2>&1 | tee batch-notail.txt || true
+
+      - name: Summarise
+        if: always()
+        shell: bash
+        run: |
+          set -u
+          env_line=$(grep -h -m1 '^env ' logs/*.out 2>/dev/null || echo "env line not captured")
+          main=$(grep -h -m1 '^runs=' batch.txt 2>/dev/null || echo "no summary")
+          ctrl=$(grep -h -m1 '^runs=' batch-notail.txt 2>/dev/null || echo "no summary")
+          crashes=$(grep -l 'Fatal error\|Internal CLR\|AccessViolation' logs/*.err 2>/dev/null | wc -l | tr -d ' ')
+          {
+            echo ""
+            echo "\`\`\`"
+            echo "$env_line"
+            echo "tail calls on : $main"
+            echo "tail calls off: $ctrl"
+            echo "crash files   : ${crashes:-0}"
+            echo "\`\`\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "$env_line"
+          echo "on : $main"
+          echo "off: $ctrl"
+
+      # Keep only the failures: 200 passing runs produce 400 empty files and no information.
+      - name: Prune passing logs
+        if: always()
+        shell: bash
+        run: |
+          set -u
+          for d in logs logs-notail; do
+            [ -d "$d" ] || continue
+            for f in "$d"/*.out; do
+              [ -e "$f" ] || continue
+              if grep -q '^PASS$' "$f" 2>/dev/null; then rm -f "$f" "${f%.out}.err"; fi
+            done
+            find "$d" -type f -empty -delete 2>/dev/null || true
+          done
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: logs-${{ matrix.os }}
+          path: |
+            batch.txt
+            batch-notail.txt
+            disasm.txt
+            logs/
+            logs-notail/
+          if-no-files-found: warn

@@ -45,7 +45,9 @@ if [ -z "${EXE:-}" ]; then
 fi
 if [ ! -x "$EXE" ]; then echo "Not built: $EXEDIR/App[.exe]" >&2; exit 2; fi
 
-LOGS=$(mktemp -d)
+# LOGDIR=... puts the per-run logs somewhere collectable, e.g. a CI artifact.
+LOGS=${LOGDIR:-$(mktemp -d)}
+mkdir -p "$LOGS"
 : > "$LOGS/failures.txt"
 echo "Running $RUNS processes, $PAR at a time. Logs: $LOGS"
 

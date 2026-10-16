@@ -1,5 +1,7 @@
 # Shell scripts run under sh; CRLF line endings break them.
 *.sh text eol=lf
+# Workflow files carry bash here-blocks that break with CRLF on Linux runners.
+*.yml text eol=lf
 *.fs text eol=crlf
 *.fsproj text eol=crlf
 *.cmd text eol=crlf

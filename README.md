@@ -8,10 +8,17 @@ Reproduced on .NET **8.0.32, 9.0.21 and 10.0.13** — this is not a regression i
 
 ## Running it
 
-    ./run.sh                      # 600 runs, 8 at a time; expect ~15 failures, ~10 of them crashes
-    NOTAILCALLS=1 ./run.sh        # the control: same sources, -p:Tailcalls=false
+    ./run.sh                      # default 400 runs, 8 at a time; expect ~11 failures, ~7 crashes
+    ./run.sh 600 8                # the sample the numbers below were measured on
+    NOTAILCALLS=1 ./run.sh        # the control: same sources, -p:Tailcalls=false, expect 0
 
-On Windows use `run.cmd` or `run.ps1` (`-NoTailcalls` for the control). All three build first,
+On Windows use `run.cmd` or `run.ps1`:
+
+    run.cmd                              # default 400 runs
+    run.cmd 600 8 Debug                  # explicit
+    run.cmd 600 8 Debug -NoTailcalls     # the control
+
+All three build first,
 run N short processes, and print a summary. Every run prints the machine it ran on:
 
     env runtime=.NET 10.0.13 os=Microsoft Windows 10.0.26300 arch=X64 cores=24 vectorBits=256 hwAccel=true avx2=true avx512f=true cpu=AMD Ryzen AI 9 HX 370 w/ Radeon 890M

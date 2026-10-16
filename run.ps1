@@ -58,6 +58,7 @@ Write-Host "Running $Runs processes, $Parallel at a time. Logs: $logs"
 $running = [System.Collections.ArrayList]::new()
 $failures = 0
 $timeouts = 0
+$abandoned = 0
 $next = 1
 
 while ($next -le $Runs -or $running.Count -gt 0) {
@@ -72,9 +73,17 @@ while ($next -le $Runs -or $running.Count -gt 0) {
 
     foreach ($e in @($running)) {
         if (-not $e.Proc.HasExited -and ((Get-Date) - $e.Proc.StartTime).TotalSeconds -gt $TimeoutSeconds) {
-            Write-Host "run $($e.Run): still alive after ${TimeoutSeconds}s - killing, counted as a failure (livelock)"
+            Write-Host "run $($e.Run): still alive after ${TimeoutSeconds}s - killing, counted as a failure"
             try { $e.Proc.Kill() } catch { }
-            $e.Proc.WaitForExit()
+
+            # A process corrupted badly enough can refuse to die: 0% CPU, and Kill denied even
+            # with admin rights. Never block the batch on one -- give it a few seconds, then
+            # abandon the slot and carry on. The stray process is reported at the end.
+            if (-not $e.Proc.WaitForExit(10000)) {
+                Write-Host "run $($e.Run): will not terminate (pid $($e.Proc.Id)) - abandoning it"
+                $abandoned++
+            }
+
             $timeouts++
             $failures++
             $running.Remove($e)
@@ -84,7 +93,7 @@ while ($next -le $Runs -or $running.Count -gt 0) {
             # ExitCode as $null even after WaitForExit, and $null -ne 0 is true, so every
             # run gets miscounted as a failure. A run that crashed, printed FAIL, or was
             # killed has no PASS line, so this is equivalent and host-independent.
-            $e.Proc.WaitForExit()
+            [void]$e.Proc.WaitForExit(5000)
             $outFile = Join-Path $logs "$($e.Run).out"
 
             $passed =
@@ -101,7 +110,16 @@ while ($next -le $Runs -or $running.Count -gt 0) {
 Write-Host ""
 Get-ChildItem -LiteralPath $logs -Filter *.out | Get-Content |
     Where-Object { $_ -like 'env *' } | Select-Object -First 1 | ForEach-Object { Write-Host $_ }
-Write-Host "runs=$Runs failures=$failures timeouts=$timeouts"
+Write-Host "runs=$Runs failures=$failures timeouts=$timeouts abandoned=$abandoned"
+
+$stray = @(Get-Process -Name ([IO.Path]::GetFileNameWithoutExtension($target)) -ErrorAction SilentlyContinue)
+if ($stray.Count -gt 0) {
+    Write-Host ""
+    Write-Host "WARNING: $($stray.Count) process(es) from this run are still alive and would not"
+    Write-Host "terminate. They are themselves a symptom. PIDs: $($stray.Id -join ', ')"
+    Write-Host "If taskkill /F is denied even elevated, the process is wedged in the kernel and"
+    Write-Host "only a reboot will clear it; the batch result above is still valid."
+}
 Get-ChildItem -LiteralPath $logs -Filter *.err | Get-Content |
     Where-Object { $_ -match 'Fatal error|Internal CLR|AccessViolation' } |
     Group-Object | Sort-Object Count -Descending | Select-Object Count, Name -First 5 | Format-Table -AutoSize

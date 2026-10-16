@@ -69,6 +69,17 @@ Over 600 runs, 16 failed:
     stack inside a `while` loop whose bound had been corrupted. The runners cap each run
     (default 300s) and count a timeout as a failure so one stuck run cannot stall a batch.
 
+## A run that will not die
+
+Occasionally a process wedges so badly it cannot be terminated at all: 0% CPU, and
+`taskkill /F` denied even elevated. That is a further symptom, not a harness problem. The
+runners cope with it — each run is capped (default 300s), and if the kill does not take
+within 10s the slot is abandoned, counted as a failure, and the batch carries on. Any
+survivors are listed at the end.
+
+A process in that state is usually stuck in a kernel wait and only a reboot clears it. Its
+presence does not invalidate the batch; the summary is still accurate.
+
 ## The construct
 
 `Prim.Span.Simd.biasAll` ends with a call to `applyAll` in tail position, so with

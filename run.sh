@@ -49,12 +49,20 @@ LOGS=$(mktemp -d)
 : > "$LOGS/failures.txt"
 echo "Running $RUNS processes, $PAR at a time. Logs: $LOGS"
 
-seq 1 "$RUNS" | xargs -P "$PAR" -I{} sh -c   'timeout "$2" "$0" > "$1/{}.out" 2> "$1/{}.err" || echo "FAIL {} exit=$?" >> "$1/failures.txt"'   "$EXE" "$LOGS" "$TIMEOUT"
+seq 1 "$RUNS" | xargs -P "$PAR" -I{} sh -c   'timeout -k 10s "$2" "$0" > "$1/{}.out" 2> "$1/{}.err" || echo "FAIL {} exit=$?" >> "$1/failures.txt"'   "$EXE" "$LOGS" "$TIMEOUT"
 
 echo
 grep -h "^env " "$LOGS"/*.out 2>/dev/null | head -1
 echo "runs=$RUNS failures=$(wc -l < "$LOGS/failures.txt" | tr -d ' ')"
 # exit=124 is the timeout killing a livelocked run, which counts as a failure.
 grep -c 'exit=124' "$LOGS/failures.txt" 2>/dev/null | sed 's/^/timeouts=/'
+
+# A corrupted process can refuse to die: 0% CPU, and kill denied even with admin rights.
+# -k above escalates to SIGKILL, but one wedged in the kernel survives that too.
+stray=$(ps -W 2>/dev/null | grep -c "[A]pp\.exe" || true)
+if [ "${stray:-0}" != "0" ]; then
+    echo "WARNING: $stray process(es) from this run are still alive and would not terminate."
+    echo "They are themselves a symptom; the batch result above is still valid."
+fi
 grep -h "FAIL \|Fatal error\|Internal CLR\|AccessViolation" "$LOGS"/*.out "$LOGS"/*.err 2>/dev/null   | sed 's/row=[0-9]*/row=N/; s/col=[0-9]*/col=N/' | sort | uniq -c | sort -rn | head -5
 [ "$(wc -l < "$LOGS/failures.txt" | tr -d ' ')" = "0" ]

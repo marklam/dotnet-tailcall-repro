@@ -1,0 +1,112 @@
+<#
+.SYNOPSIS
+Runs the repro as many short-lived processes and reports the failure rate.
+
+.DESCRIPTION
+The fault is concentrated in process warm-up, so it must be run as many short processes:
+a single run only fails about 2.5% of the time. Release never reproduces it, by design --
+there the callee is inlined and no tail call is emitted at all.
+
+.EXAMPLE
+./run.ps1                   # 400 Debug runs, 8 at a time: expect ~10 failures
+./run.ps1 -NoTailcalls      # the control arm: expect 0 failures
+#>
+param(
+    [int]$Runs = 400,
+    [int]$Parallel = 8,
+    # A corrupted run can livelock instead of crashing, spinning at 100% of one core
+    # indefinitely. Without a cap one such run stalls the whole pool.
+    [int]$TimeoutSeconds = 300,
+    [ValidateSet('Debug', 'Release')][string]$Configuration = 'Debug',
+    [switch]$NoTailcalls,
+    [switch]$SkipBuild,
+    # Point at an already-published App.exe (implies -SkipBuild). For a machine with no SDK:
+    #   dotnet publish App/App.fsproj -c Debug -r win-x64 --self-contained
+    # Debug is required -- a Release build inlines the callee and cannot reproduce.
+    [string]$Exe
+)
+
+$ErrorActionPreference = 'Stop'
+$root = $PSScriptRoot
+$project = Join-Path $root 'App/App.fsproj'
+
+if ($NoTailcalls) {
+    $outDir = Join-Path $root "bin/notail/$Configuration/"
+    $buildArgs = @("-p:Tailcalls=false", "-p:OutputPath=$outDir", "-p:IntermediateOutputPath=obj/notail/$Configuration/net10.0/")
+    $exe = Join-Path $outDir 'App.exe'
+} else {
+    $buildArgs = @()
+    $exe = Join-Path $root "App/bin/$Configuration/net10.0/App.exe"
+}
+
+if ($Exe) {
+    $exe = (Resolve-Path -LiteralPath $Exe).Path
+    $SkipBuild = $true
+}
+
+if (-not $SkipBuild) {
+    Write-Host "Building $Configuration$(if ($NoTailcalls) { ' (Tailcalls=false)' })..."
+    & dotnet build $project -c $Configuration @buildArgs -v minimal | Select-Object -Last 3
+    if ($LASTEXITCODE -ne 0) { throw "Build failed" }
+}
+if (-not (Test-Path -LiteralPath $exe)) { throw "Not built: $exe" }
+
+$logs = Join-Path ([IO.Path]::GetTempPath()) "tailcall-repro-$(Get-Date -Format yyyyMMdd-HHmmss)"
+$null = New-Item -ItemType Directory -Force -Path $logs
+Write-Host "Running $Runs processes, $Parallel at a time. Logs: $logs"
+
+$running = [System.Collections.ArrayList]::new()
+$failures = 0
+$timeouts = 0
+$next = 1
+
+while ($next -le $Runs -or $running.Count -gt 0) {
+    while ($next -le $Runs -and $running.Count -lt $Parallel) {
+        $p = Start-Process -FilePath $exe -PassThru -NoNewWindow `
+            -RedirectStandardOutput (Join-Path $logs "$next.out") -RedirectStandardError (Join-Path $logs "$next.err")
+        $null = $running.Add([pscustomobject]@{ Run = $next; Proc = $p })
+        $next++
+    }
+
+    Start-Sleep -Milliseconds 100
+
+    foreach ($e in @($running)) {
+        if (-not $e.Proc.HasExited -and ((Get-Date) - $e.Proc.StartTime).TotalSeconds -gt $TimeoutSeconds) {
+            Write-Host "run $($e.Run): still alive after ${TimeoutSeconds}s - killing, counted as a failure (livelock)"
+            try { $e.Proc.Kill() } catch { }
+            $e.Proc.WaitForExit()
+            $timeouts++
+            $failures++
+            $running.Remove($e)
+        } elseif ($e.Proc.HasExited) {
+            # Success is judged from the program's own output, NOT from $e.Proc.ExitCode:
+            # under Windows PowerShell 5.1 a Start-Process -PassThru object reports
+            # ExitCode as $null even after WaitForExit, and $null -ne 0 is true, so every
+            # run gets miscounted as a failure. A run that crashed, printed FAIL, or was
+            # killed has no PASS line, so this is equivalent and host-independent.
+            $e.Proc.WaitForExit()
+            $outFile = Join-Path $logs "$($e.Run).out"
+
+            $passed =
+                (Test-Path -LiteralPath $outFile) -and
+                ((Get-Content -LiteralPath $outFile -ErrorAction SilentlyContinue) -contains 'PASS')
+
+            if (-not $passed) { $failures++ }
+
+            $running.Remove($e)
+        }
+    }
+}
+
+Write-Host ""
+Get-ChildItem -LiteralPath $logs -Filter *.out | Get-Content |
+    Where-Object { $_ -like 'env *' } | Select-Object -First 1 | ForEach-Object { Write-Host $_ }
+Write-Host "runs=$Runs failures=$failures timeouts=$timeouts"
+Get-ChildItem -LiteralPath $logs -Filter *.err | Get-Content |
+    Where-Object { $_ -match 'Fatal error|Internal CLR|AccessViolation' } |
+    Group-Object | Sort-Object Count -Descending | Select-Object Count, Name -First 5 | Format-Table -AutoSize
+Get-ChildItem -LiteralPath $logs -Filter *.out | Get-Content |
+    Where-Object { $_ -match '^FAIL ' } |
+    ForEach-Object { $_ -replace 'row=\d+', 'row=N' -replace 'col=\d+', 'col=N' } |
+    Group-Object | Sort-Object Count -Descending | Select-Object Count, Name -First 5 | Format-Table -AutoSize
+if ($failures -gt 0) { exit 1 }

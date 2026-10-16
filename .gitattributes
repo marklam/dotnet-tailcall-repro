@@ -1,0 +1,6 @@
+# Shell scripts run under sh; CRLF line endings break them.
+*.sh text eol=lf
+*.fs text eol=crlf
+*.fsproj text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf

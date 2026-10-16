@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <!-- NOT the F# default in Debug. Without it fsc emits no `tail.` prefix and the fault vanishes. -->
+    <Tailcalls>true</Tailcalls>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="Sweep.fs" />
+    <Compile Include="Program.fs" />
+    <!-- The kernels MUST be a separate assembly: with everything in one assembly the JIT does not
+         take the helper-based tail-call path and the fault does not occur. -->
+    <ProjectReference Include="../Lib/Lib.fsproj" />
+  </ItemGroup>
+</Project>

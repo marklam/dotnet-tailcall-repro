@@ -33,14 +33,14 @@ $project = Join-Path $root 'App/App.fsproj'
 if ($NoTailcalls) {
     $outDir = Join-Path $root "bin/notail/$Configuration/"
     $buildArgs = @("-p:Tailcalls=false", "-p:OutputPath=$outDir", "-p:IntermediateOutputPath=obj/notail/$Configuration/net10.0/")
-    $exe = Join-Path $outDir 'App.exe'
+    $target = Join-Path $outDir 'App.exe'
 } else {
     $buildArgs = @()
-    $exe = Join-Path $root "App/bin/$Configuration/net10.0/App.exe"
+    $target = Join-Path $root "App/bin/$Configuration/net10.0/App.exe"
 }
 
 if ($Exe) {
-    $exe = (Resolve-Path -LiteralPath $Exe).Path
+    $target = (Resolve-Path -LiteralPath $Exe).Path
     $SkipBuild = $true
 }
 
@@ -49,7 +49,7 @@ if (-not $SkipBuild) {
     & dotnet build $project -c $Configuration @buildArgs -v minimal | Select-Object -Last 3
     if ($LASTEXITCODE -ne 0) { throw "Build failed" }
 }
-if (-not (Test-Path -LiteralPath $exe)) { throw "Not built: $exe" }
+if (-not (Test-Path -LiteralPath $target)) { throw "Not built: $target" }
 
 $logs = Join-Path ([IO.Path]::GetTempPath()) "tailcall-repro-$(Get-Date -Format yyyyMMdd-HHmmss)"
 $null = New-Item -ItemType Directory -Force -Path $logs
@@ -62,7 +62,7 @@ $next = 1
 
 while ($next -le $Runs -or $running.Count -gt 0) {
     while ($next -le $Runs -and $running.Count -lt $Parallel) {
-        $p = Start-Process -FilePath $exe -PassThru -NoNewWindow `
+        $p = Start-Process -FilePath $target -PassThru -NoNewWindow `
             -RedirectStandardOutput (Join-Path $logs "$next.out") -RedirectStandardError (Join-Path $logs "$next.err")
         $null = $running.Add([pscustomobject]@{ Run = $next; Proc = $p })
         $next++

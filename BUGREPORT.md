@@ -213,10 +213,41 @@ caller-allocated memory with only four integer argument registers, so a tail cal
 safely reuse the outgoing argument space. SysV x64 and arm64 have more argument registers and
 can pass a 16-byte struct in registers, so a plain branch suffices.
 
-Note also the rate on hosted runners. Those are 4 vCPU against the 8 and 24 of the machines
-above, and concurrency is part of the trigger: the Windows x64 runner produced 2 failures in
-200 runs on one dispatch and 0 in 200 on the next. Low core counts reproduce it, but slowly
-enough that a single 200-run job is not a reliable check.
+### Reproduced on GitHub-hosted hardware
+
+So that this does not rest on machines we own, it also reproduces on a GitHub-hosted runner
+-- hardware outside our control, provisioned fresh for the job:
+
+* Run: https://github.com/marklam/dotnet-tailcall-repro/actions/runs/38977023902
+* Job: `windows-latest`, started 2026-10-16T22:39:15Z
+* Runner image `windows-2025-vs2026`; `AMD EPYC 9V74 80-Core Processor`, 4 vCPU allocated
+* Workflow: `.github/workflows/repro.yml` in the repro repo, so it can be dispatched again
+  by anyone who forks it
+
+```
+env runtime=.NET 10.0.13 os=Microsoft Windows 10.0.26100 arch=X64 cores=4 vectorBits=256 hwAccel=true avx2=true avx512f=true cpu=AMD EPYC 9V74 80-Core Processor
+DispatchTailCalls occurrences: 1
+
+tail calls on : runs=200 failures=2
+    2 Fatal error.
+    1 System.AccessViolationException: Attempted to read or write protected memory...
+    1 Internal CLR error. (0x80131506)
+
+tail calls off: runs=200 failures=0
+```
+
+Both arms ran in that one job on that one machine, so the on/off comparison is not confounded
+by hardware.
+
+A second dispatch of the same workflow
+(https://github.com/marklam/dotnet-tailcall-repro/actions/runs/39017342739, 2026-10-17) gave
+0 failures in 200 on the Windows x64 job. Hosted runners are 4 vCPU against the 8 and 24 of
+the machines above, and concurrency is part of the trigger, so the rate there is low enough
+that a single 200-run job is not a reliable check -- roughly one dispatch in seven will come
+back clean. Use ~1000 runs if CI is meant to be a dependable signal rather than a spot check.
+
+Note that Actions logs and artifacts expire, so the output above is quoted rather than left
+as a link alone.
 
 ### Two further manifestations
 

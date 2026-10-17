@@ -82,7 +82,8 @@ identical passes.
 
 ## Actual behaviour
 
-Two machines, different CPU vendors, 400 runs each.
+Two machines, different CPU vendors, 400 runs each. A third (a 4 vCPU GitHub-hosted Windows
+x64 runner) also reproduces, more slowly -- see the platform section below.
 
 | | machine A | machine B |
 |---|---|---|
@@ -187,6 +188,35 @@ Faulting module path: unknown
 
 This is well away from the code the repro itself runs, and shows the corruption reaching
 runtime data structures.
+
+### Platform: the helper is used on Windows x64 only
+
+The `tail.` prefix is in the IL on every platform, but the JIT satisfies it differently, and
+the fault follows the *helper*, not the prefix. Disassembly of the same method
+(`Sweep:<biasAll>__debug@163`, MinOpts) on four GitHub-hosted runners:
+
+| platform | how the method leaves | runs | failures |
+|---|---|---|---|
+| Windows x64 | `call IL_STUB_StoreTailCallArgs` then `call RuntimeHelpers.DispatchTailCalls` | 200 + 200 | **2**, then 0 |
+| Linux x64 | `tail.jmp [Prim+Span+Simd:applyAll...]` | 200 | 0 |
+| Windows arm64 | `ldp fp, lr, [sp], #0x60` then `br x4` | 200 | 0 |
+| Linux arm64 | (no helper call emitted) | 200 | 0 |
+
+Linux x64 and both arm64 targets use a **fast** tail call -- a jump, after tearing down the
+frame -- so the helper is never involved. Their clean results are therefore *not* evidence
+that those platforms are unaffected by the bug: the construct the bug lives in does not arise
+there at all. Only the Windows x64 column is a test of anything.
+
+A plausible explanation, which we have not verified: `Span<double>` is a 16-byte byref-like
+struct, and the Windows x64 ABI passes structs larger than 8 bytes by hidden reference into
+caller-allocated memory with only four integer argument registers, so a tail call cannot
+safely reuse the outgoing argument space. SysV x64 and arm64 have more argument registers and
+can pass a 16-byte struct in registers, so a plain branch suffices.
+
+Note also the rate on hosted runners. Those are 4 vCPU against the 8 and 24 of the machines
+above, and concurrency is part of the trigger: the Windows x64 runner produced 2 failures in
+200 runs on one dispatch and 0 in 200 on the next. Low core counts reproduce it, but slowly
+enough that a single 200-run job is not a reliable check.
 
 ### Two further manifestations
 

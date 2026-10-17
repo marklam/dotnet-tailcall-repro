@@ -74,7 +74,7 @@ jobs:
         run: |
           set -u
           mkdir -p logs
-          LOGDIR="$PWD/logs" ./run.sh "${{ inputs.runs }}" "${{ inputs.parallel }}" Debug \
+          LOGDIR="$PWD/logs" bash ./run.sh "${{ inputs.runs }}" "${{ inputs.parallel }}" Debug \
             2>&1 | tee batch.txt || true
 
       - name: Control arm, tail calls off
@@ -83,18 +83,23 @@ jobs:
         run: |
           set -u
           mkdir -p logs-notail
-          NOTAILCALLS=1 LOGDIR="$PWD/logs-notail" ./run.sh "${{ inputs.runs }}" "${{ inputs.parallel }}" Debug \
+          NOTAILCALLS=1 LOGDIR="$PWD/logs-notail" bash ./run.sh "${{ inputs.runs }}" "${{ inputs.parallel }}" Debug \
             2>&1 | tee batch-notail.txt || true
 
       - name: Summarise
         if: always()
         shell: bash
         run: |
-          set -u
-          env_line=$(grep -h -m1 '^env ' logs/*.out 2>/dev/null || echo "env line not captured")
-          main=$(grep -h -m1 '^runs=' batch.txt 2>/dev/null || echo "no summary")
-          ctrl=$(grep -h -m1 '^runs=' batch-notail.txt 2>/dev/null || echo "no summary")
-          crashes=$(grep -l 'Fatal error\|Internal CLR\|AccessViolation' logs/*.err 2>/dev/null | wc -l | tr -d ' ')
+          set +e
+          env_line=$(cat logs/*.out 2>/dev/null | grep -m1 '^env ')
+          [ -n "$env_line" ] || env_line=$(grep -h -m1 '^env ' batch.txt 2>/dev/null)
+          [ -n "$env_line" ] || env_line="env line not captured"
+          main=$(grep -h -m1 '^runs=' batch.txt 2>/dev/null)
+          [ -n "$main" ] || main="no summary"
+          ctrl=$(grep -h -m1 '^runs=' batch-notail.txt 2>/dev/null)
+          [ -n "$ctrl" ] || ctrl="no summary"
+          crashes=$(cat logs/*.err 2>/dev/null | grep -c 'Fatal error\|Internal CLR\|AccessViolation')
+          [ -n "$crashes" ] || crashes=0
           {
             echo ""
             echo "\`\`\`"

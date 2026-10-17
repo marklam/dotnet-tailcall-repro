@@ -221,8 +221,9 @@ So that this does not rest on machines we own, it also reproduces on a GitHub-ho
 * Run: https://github.com/marklam/dotnet-tailcall-repro/actions/runs/38977023902
 * Job: `windows-latest`, started 2026-10-16T22:39:15Z
 * Runner image `windows-2025-vs2026`; `AMD EPYC 9V74 80-Core Processor`, 4 vCPU allocated
-* Workflow: `.github/workflows/repro.yml` in the repro repo, so it can be dispatched again
-  by anyone who forks it
+* Workflow: `.github/workflows/repro.yml` in the repro repo. Fork it and dispatch it to
+  verify this independently -- it runs on your own runners and minutes, and needs nothing
+  from us
 
 ```
 env runtime=.NET 10.0.13 os=Microsoft Windows 10.0.26100 arch=X64 cores=4 vectorBits=256 hwAccel=true avx2=true avx512f=true cpu=AMD EPYC 9V74 80-Core Processor

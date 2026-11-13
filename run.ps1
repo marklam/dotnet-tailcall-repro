@@ -10,6 +10,7 @@ there the callee is inlined and no tail call is emitted at all.
 .EXAMPLE
 ./run.ps1                   # 400 Debug runs, 8 at a time: expect ~10 failures
 ./run.ps1 -NoTailcalls      # the control arm: expect 0 failures
+./run.ps1 -LatestRuntime    # the same build on the newest installed runtime, e.g. .NET 11
 #>
 param(
     [int]$Runs = 400,
@@ -20,6 +21,10 @@ param(
     [ValidateSet('Debug', 'Release')][string]$Configuration = 'Debug',
     [switch]$NoTailcalls,
     [switch]$SkipBuild,
+    # Run the net10.0 build on the newest installed runtime (DOTNET_ROLL_FORWARD=LatestMajor),
+    # e.g. .NET 11, so the IL is identical and only the runtime and JIT differ. The `env` line
+    # in the summary says which runtime actually ran.
+    [switch]$LatestRuntime,
     # Point at an already-published App.exe (implies -SkipBuild). For a machine with no SDK:
     #   dotnet publish App/App.fsproj -c Debug -r win-x64 --self-contained
     # Debug is required -- a Release build inlines the callee and cannot reproduce.
@@ -65,50 +70,59 @@ $timeouts = 0
 $abandoned = 0
 $next = 1
 
-while ($next -le $Runs -or $running.Count -gt 0) {
-    while ($next -le $Runs -and $running.Count -lt $Parallel) {
-        $p = Start-Process -FilePath $target -PassThru -NoNewWindow `
-            -RedirectStandardOutput (Join-Path $logs "$next.out") -RedirectStandardError (Join-Path $logs "$next.err")
-        $null = $running.Add([pscustomobject]@{ Run = $next; Proc = $p })
-        $next++
-    }
+# Set only around the runs, not the build: the SDK is itself a .NET app and must not roll
+# forward. Restored afterwards so a dot-sourced or interactive session is left as it was.
+$previousRollForward = $env:DOTNET_ROLL_FORWARD
+if ($LatestRuntime) { $env:DOTNET_ROLL_FORWARD = 'LatestMajor' }
 
-    Start-Sleep -Milliseconds 100
+try {
+    while ($next -le $Runs -or $running.Count -gt 0) {
+        while ($next -le $Runs -and $running.Count -lt $Parallel) {
+            $p = Start-Process -FilePath $target -PassThru -NoNewWindow `
+                -RedirectStandardOutput (Join-Path $logs "$next.out") -RedirectStandardError (Join-Path $logs "$next.err")
+            $null = $running.Add([pscustomobject]@{ Run = $next; Proc = $p })
+            $next++
+        }
 
-    foreach ($e in @($running)) {
-        if (-not $e.Proc.HasExited -and ((Get-Date) - $e.Proc.StartTime).TotalSeconds -gt $TimeoutSeconds) {
-            Write-Host "run $($e.Run): still alive after ${TimeoutSeconds}s - killing, counted as a failure"
-            try { $e.Proc.Kill() } catch { }
+        Start-Sleep -Milliseconds 100
 
-            # A process corrupted badly enough can refuse to die: 0% CPU, and Kill denied even
-            # with admin rights. Never block the batch on one -- give it a few seconds, then
-            # abandon the slot and carry on. The stray process is reported at the end.
-            if (-not $e.Proc.WaitForExit(10000)) {
-                Write-Host "run $($e.Run): will not terminate (pid $($e.Proc.Id)) - abandoning it"
-                $abandoned++
+        foreach ($e in @($running)) {
+            if (-not $e.Proc.HasExited -and ((Get-Date) - $e.Proc.StartTime).TotalSeconds -gt $TimeoutSeconds) {
+                Write-Host "run $($e.Run): still alive after ${TimeoutSeconds}s - killing, counted as a failure"
+                try { $e.Proc.Kill() } catch { }
+
+                # A process corrupted badly enough can refuse to die: 0% CPU, and Kill denied even
+                # with admin rights. Never block the batch on one -- give it a few seconds, then
+                # abandon the slot and carry on. The stray process is reported at the end.
+                if (-not $e.Proc.WaitForExit(10000)) {
+                    Write-Host "run $($e.Run): will not terminate (pid $($e.Proc.Id)) - abandoning it"
+                    $abandoned++
+                }
+
+                $timeouts++
+                $failures++
+                $running.Remove($e)
+            } elseif ($e.Proc.HasExited) {
+                # Success is judged from the program's own output, NOT from $e.Proc.ExitCode:
+                # under Windows PowerShell 5.1 a Start-Process -PassThru object reports
+                # ExitCode as $null even after WaitForExit, and $null -ne 0 is true, so every
+                # run gets miscounted as a failure. A run that crashed, printed FAIL, or was
+                # killed has no PASS line, so this is equivalent and host-independent.
+                [void]$e.Proc.WaitForExit(5000)
+                $outFile = Join-Path $logs "$($e.Run).out"
+
+                $passed =
+                    (Test-Path -LiteralPath $outFile) -and
+                    ((Get-Content -LiteralPath $outFile -ErrorAction SilentlyContinue) -contains 'PASS')
+
+                if (-not $passed) { $failures++ }
+
+                $running.Remove($e)
             }
-
-            $timeouts++
-            $failures++
-            $running.Remove($e)
-        } elseif ($e.Proc.HasExited) {
-            # Success is judged from the program's own output, NOT from $e.Proc.ExitCode:
-            # under Windows PowerShell 5.1 a Start-Process -PassThru object reports
-            # ExitCode as $null even after WaitForExit, and $null -ne 0 is true, so every
-            # run gets miscounted as a failure. A run that crashed, printed FAIL, or was
-            # killed has no PASS line, so this is equivalent and host-independent.
-            [void]$e.Proc.WaitForExit(5000)
-            $outFile = Join-Path $logs "$($e.Run).out"
-
-            $passed =
-                (Test-Path -LiteralPath $outFile) -and
-                ((Get-Content -LiteralPath $outFile -ErrorAction SilentlyContinue) -contains 'PASS')
-
-            if (-not $passed) { $failures++ }
-
-            $running.Remove($e)
         }
     }
+} finally {
+    $env:DOTNET_ROLL_FORWARD = $previousRollForward
 }
 
 Write-Host ""

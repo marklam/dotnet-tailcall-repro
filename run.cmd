@@ -7,6 +7,7 @@ rem it, by design -- there the callee is inlined and no tail call is emitted at 
 rem
 rem   run.cmd [runs] [parallelism] [Debug^|Release]
 rem   run.cmd 400 8 Debug -NoTailcalls      the control arm: expect 0 failures
+rem   run.cmd 400 8 Debug -LatestRuntime    same build on the newest installed runtime, e.g. .NET 11
 rem
 rem The process pool and log summary live in run.ps1; this wrapper only forwards to it so
 rem there is one implementation to keep correct rather than two.

@@ -17,6 +17,7 @@ On Windows use `run.cmd` or `run.ps1`:
     run.cmd                              # default 400 runs
     run.cmd 600 8 Debug                  # explicit
     run.cmd 600 8 Debug -NoTailcalls     # the control
+    run.cmd 600 8 Debug -LatestRuntime   # same build on the newest runtime installed, e.g. .NET 11
 
 All three build first,
 run N short processes, and print a summary. Every run prints the machine it ran on:

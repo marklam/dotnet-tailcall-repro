@@ -12,6 +12,9 @@ there the callee is inlined and no tail call is emitted at all.
 ./run.ps1 -NoTailcalls      # the control arm: expect 0 failures
 ./run.ps1 -LatestRuntime    # the same build on the newest installed runtime, e.g. .NET 11
 #>
+# Without CmdletBinding a misspelt switch (e.g. --latest-runtime) lands silently in $args
+# and the batch runs without it.
+[CmdletBinding()]
 param(
     [int]$Runs = 400,
     [int]$Parallel = 8,

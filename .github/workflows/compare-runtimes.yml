@@ -1,0 +1,111 @@
+name: compare-runtimes
+
+# Is the fault fixed in .NET 11? The same Debug build of net10.0 is run on the .NET 10 runtime
+# and, via DOTNET_ROLL_FORWARD=LatestMajor, on .NET 11 -- so the two arms differ only in the
+# runtime and JIT, never in the IL.
+#
+# Windows x64 only: it is the one platform where the JIT takes the helper-based tail call
+# (see ISSUE.md); elsewhere the construct does not arise. Hosted runners fail at roughly 0.5%,
+# so each runtime is sharded across several jobs to reach a sample that can discriminate.
+on:
+  push:
+    branches: [compare-runtimes]
+  workflow_dispatch:
+    inputs:
+      runs:
+        description: Processes to start per shard
+        default: "400"
+
+jobs:
+  repro:
+    name: net${{ matrix.runtime }} shard ${{ matrix.shard }}
+    runs-on: windows-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        runtime: ["10", "11"]
+        shard: [1, 2, 3, 4, 5, 6]
+
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+      DOTNET_NOLOGO: "1"
+      RUNS: ${{ inputs.runs || '400' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            10.0.x
+            11.0.x
+
+      - name: Build (Debug, net10.0)
+        run: dotnet build App/App.fsproj -c Debug -nodeReuse:false
+
+      - name: Select the runtime
+        if: matrix.runtime == '11'
+        shell: bash
+        run: echo "DOTNET_ROLL_FORWARD=LatestMajor" >> "$GITHUB_ENV"
+
+      # Fail fast if the arm is not running what it claims, or if the construct under test is
+      # absent -- either would make a clean result meaningless.
+      - name: Check runtime and helper-based tail call
+        shell: bash
+        run: |
+          set -u
+          exe=App/bin/Debug/net10.0/App.exe
+          DOTNET_JitDisasm='*biasAll*' DOTNET_JitStdOutFile=disasm.txt "$exe" > first.txt || true
+          cat first.txt
+          grep -q "^env runtime=.NET ${{ matrix.runtime }}\." first.txt || { echo "::error::not running on .NET ${{ matrix.runtime }}"; exit 1; }
+          count=$(grep -c 'DispatchTailCalls' disasm.txt || true)
+          echo "DispatchTailCalls occurrences: ${count:-0}"
+          [ "${count:-0}" != "0" ] || { echo "::error::helper-based tail call not emitted"; exit 1; }
+
+      - name: Run the batch
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -u
+          mkdir -p logs
+          EXE="$PWD/App/bin/Debug/net10.0/App.exe" LOGDIR="$PWD/logs" bash ./run.sh "$RUNS" 4 Debug \
+            2>&1 | tee batch.txt || true
+
+      - name: Summarise
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          env_line=$(grep -h -m1 '^env ' first.txt)
+          main=$(grep -h -m1 '^runs=' batch.txt)
+          crashes=$(cat logs/*.err 2>/dev/null | grep -c 'Fatal error\|Internal CLR\|AccessViolation')
+          {
+            echo "### net${{ matrix.runtime }} shard ${{ matrix.shard }}"
+            echo "\`\`\`"
+            echo "$env_line"
+            echo "${main:-no summary} crashes=${crashes:-0}"
+            echo "\`\`\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "RESULT runtime=${{ matrix.runtime }} shard=${{ matrix.shard }} ${main:-no summary} crashes=${crashes:-0}"
+
+      - name: Prune passing logs
+        if: always()
+        shell: bash
+        run: |
+          for f in logs/*.out; do
+            [ -e "$f" ] || continue
+            if grep -q '^PASS$' "$f" 2>/dev/null; then rm -f "$f" "${f%.out}.err"; fi
+          done
+          find logs -type f -empty -delete 2>/dev/null || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: logs-net${{ matrix.runtime }}-shard${{ matrix.shard }}
+          path: |
+            first.txt
+            batch.txt
+            disasm.txt
+            logs/
+          if-no-files-found: warn
